@@ -1,4 +1,4 @@
-# Super Tradutor Automático (v7.3 - Versão Final Consolidada)
+# Tradutor Automático  Local ( Sem IA ) (v7.3 - Versão Final Consolidada)
 
 Este script Python é uma ferramenta robusta para a tradução automática de textos, focada em arquivos de jogos Ren'Py (.rpy) e documentos Word (.docx). Ele foi desenvolvido com funcionalidades avançadas para preservar a integridade do código em arquivos Ren'Py e adaptar o estilo da tradução para o Português do Brasil (pt-BR), considerando formalidade e contexto.
 
