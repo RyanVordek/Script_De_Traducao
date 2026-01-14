@@ -18,6 +18,8 @@ import shutil
 import argparse
 from functools import lru_cache
 import subprocess # Importar o módulo subprocess
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 
 # --- Bloco de Importação e Verificação de Dependências ---
 def install_and_import(package, install_name=None):
@@ -54,6 +56,39 @@ import docx
 
 # --- Variáveis Globais ---
 TRADUTOR = None
+USAR_FILTRO_GENERO = True
+MAPA_GENERO_PERSONAGEM = {}
+GLOSSARIO_PROTEGIDO = []
+PADROES_PROTEGIDOS = []
+
+PADROES_PROTEGIDOS_PADRAO = [
+    r'%\([^)]+\)[sd]',
+    r'%[sd]',
+    r'\b\d{1,2}:\d{2}\b',
+    r'\b\d+(?:[.,]\d+)?\b',
+    r'\b[A-Z]{2,}\b',
+    r'\b\w+_\w+\b',
+    r'\b[\w\-]+\.(?:png|jpg|jpeg|gif|webp|mp3|ogg|wav|webm|mp4)\b',
+    r'\b#[0-9A-Fa-f]{3,6}\b',
+    r'[A-Za-z]:\\[^\s]+',
+    r'/[^\s]+',
+]
+
+PADROES_PRONOMES_FEMININOS = [
+    (r'\bela\b', 'ele'),
+    (r'\bdela\b', 'dele'),
+    (r'\bnela\b', 'nele'),
+    (r'\bminha\b', 'meu'),
+    (r'\bminhas\b', 'meus'),
+    (r'\bsua\b', 'seu'),
+    (r'\bsuas\b', 'seus'),
+    (r'\buma\b', 'um'),
+    (r'\buma\s+das\b', 'um dos'),
+    (r'\bboa\b', 'bom'),
+    (r'\bbonita\b', 'bonito'),
+]
+
+RELATORIO_PROBLEMAS = []
 
 # --- Funções Principais de Tradução e Adaptação ---
 
@@ -144,6 +179,126 @@ def traduzir_com_cache(texto_original):
         print(f"⚠️  Erro ao traduzir o texto '{texto_original[:50]}...': {e}")
         return texto_original
 
+def carregar_glossario(caminho_glossario):
+    """
+    Carrega uma lista de termos protegidos a partir de um arquivo de texto.
+    Linhas em branco e comentários iniciados por # são ignorados.
+    """
+    termos = []
+    if not caminho_glossario:
+        return termos
+    try:
+        with open(caminho_glossario, 'r', encoding='utf-8') as f:
+            for linha in f:
+                linha = linha.strip()
+                if not linha or linha.startswith('#'):
+                    continue
+                termos.append(linha)
+    except FileNotFoundError:
+        print(f"⚠️  Glossário não encontrado: {caminho_glossario}")
+    return termos
+
+def carregar_padroes_protegidos(caminho_padroes):
+    """
+    Carrega padrões regex adicionais a partir de um arquivo de texto.
+    Linhas em branco e comentários iniciados por # são ignorados.
+    """
+    padroes = []
+    if not caminho_padroes:
+        return padroes
+    try:
+        with open(caminho_padroes, 'r', encoding='utf-8') as f:
+            for linha in f:
+                linha = linha.strip()
+                if not linha or linha.startswith('#'):
+                    continue
+                padroes.append(linha)
+    except FileNotFoundError:
+        print(f"⚠️  Padrões de regex não encontrados: {caminho_padroes}")
+    return padroes
+
+def carregar_mapa_genero(caminho_genero):
+    """
+    Carrega um mapa de gênero por personagem no formato:
+    personagem=masc|fem|neutro
+    """
+    mapa = {}
+    if not caminho_genero:
+        return mapa
+    try:
+        with open(caminho_genero, 'r', encoding='utf-8') as f:
+            for linha in f:
+                linha = linha.strip()
+                if not linha or linha.startswith('#') or '=' not in linha:
+                    continue
+                personagem, genero = linha.split('=', 1)
+                mapa[personagem.strip()] = genero.strip().lower()
+    except FileNotFoundError:
+        print(f"⚠️  Mapa de gênero não encontrado: {caminho_genero}")
+    return mapa
+
+def proteger_termos(texto):
+    """
+    Substitui termos do glossário e padrões por placeholders para evitar tradução.
+    Retorna o texto protegido e o mapa de restauração.
+    """
+    substituicoes = {}
+    contador = 0
+
+    def substituir_term(match):
+        nonlocal contador
+        termo = match.group(0)
+        chave = f"__TERM_{contador:04d}__"
+        substituicoes[chave] = termo
+        contador += 1
+        return chave
+
+    texto_protegido = texto
+    for termo in GLOSSARIO_PROTEGIDO:
+        if not termo:
+            continue
+        padrao = re.compile(r'\b' + re.escape(termo) + r'\b')
+        texto_protegido = padrao.sub(substituir_term, texto_protegido)
+
+    for padrao in PADROES_PROTEGIDOS:
+        texto_protegido = re.sub(padrao, substituir_term, texto_protegido)
+
+    return texto_protegido, substituicoes
+
+def restaurar_termos(texto, substituicoes):
+    for chave, termo in substituicoes.items():
+        texto = texto.replace(chave, termo)
+    return texto
+
+def aplicar_filtro_genero(texto_traduzido, genero):
+    """
+    Aplica um filtro para evitar pronomes femininos quando o gênero do personagem
+    é masculino ou neutro.
+    """
+    if genero == 'fem':
+        return texto_traduzido
+    texto_corrigido = texto_traduzido
+    for padrao, substituto in PADROES_PRONOMES_FEMININOS:
+        texto_corrigido = re.sub(padrao, substituto, texto_corrigido, flags=re.IGNORECASE)
+    return texto_corrigido
+
+def registrar_problemas(texto_original, texto_traduzido, origem):
+    """
+    Registra ocorrências de possíveis problemas no relatório final.
+    """
+    problemas = []
+    for padrao, _ in PADROES_PRONOMES_FEMININOS:
+        if re.search(padrao, texto_traduzido, flags=re.IGNORECASE):
+            problemas.append("pronome_feminino")
+            break
+    if problemas:
+        RELATORIO_PROBLEMAS.append({
+            "origem": origem,
+            "original": texto_original,
+            "traduzido": texto_traduzido,
+            "problemas": problemas
+        })
+
 def traduzir_com_protecao_de_codigo(texto_com_codigo):
     """
     Divide a string em texto e código Ren'Py ({...} ou [...]), traduz apenas o texto
@@ -170,8 +325,10 @@ def traduzir_com_protecao_de_codigo(texto_com_codigo):
             # Se for código, mantém original
             partes_traduzidas.append(parte)
         else:
-            # Se for texto, traduz
-            partes_traduzidas.append(traduzir_com_cache(parte))
+            # Se for texto, protege termos e traduz
+            parte_protegida, substituicoes = proteger_termos(parte)
+            traducao = traduzir_com_cache(parte_protegida)
+            partes_traduzidas.append(restaurar_termos(traducao, substituicoes))
 
     return "".join(partes_traduzidas)
 
@@ -345,12 +502,20 @@ def processar_arquivo_rpy(caminho_arquivo):
                 prefixo_vazio = m_vazio_diag.group('prefixo')
                 if prefixo_comentado.split()[0] == prefixo_vazio.split()[0]:
                     texto_original = m_com_diag.group('texto')
+                    personagem = prefixo_vazio.split()[0]
                     traducao_final = processar_paragrafo_completo(texto_original)
+                    if USAR_FILTRO_GENERO:
+                        genero = MAPA_GENERO_PERSONAGEM.get(personagem, "neutro")
+                        traducao_final = aplicar_filtro_genero(traducao_final, genero)
+                    registrar_problemas(texto_original, traducao_final, f"{os.path.basename(caminho_arquivo)}:{i + 1}")
                     linha_traduzida_formatada = f'{m_vazio_diag.group("indent")}{prefixo_vazio} "{traducao_final}"\n'
             
             elif m_com_narr and m_vazio_narr and m_com_narr.group('resto').strip() == m_vazio_narr.group('resto').strip():
                 texto_original = m_com_narr.group('texto')
                 traducao_final = processar_paragrafo_completo(texto_original)
+                if USAR_FILTRO_GENERO:
+                    traducao_final = aplicar_filtro_genero(traducao_final, "neutro")
+                registrar_problemas(texto_original, traducao_final, f"{os.path.basename(caminho_arquivo)}:{i + 1}")
                 linha_traduzida_formatada = f'{m_vazio_narr.group("indent")}"{traducao_final}"{m_vazio_narr.group("resto")}\n'
             
             if texto_original is not None and linha_traduzida_formatada is not None:
@@ -400,7 +565,17 @@ def modo_rpy(diretorio):
     print("--- Processo Ren'Py Concluído ---")
     print(f"✅ Arquivos .rpy processados: {len(arquivos_rpy)}")
     print(f"✅ Total de linhas traduzidas: {total_traducoes_geral}")
-    print("🔔 Lembrete: Faça uma revisão manual dos textos traduzidos!")
+    if RELATORIO_PROBLEMAS:
+        print(f"⚠️  Encontrados {len(RELATORIO_PROBLEMAS)} possíveis problemas.")
+        caminho_relatorio = os.path.join(diretorio, "relatorio_traducao.txt")
+        with open(caminho_relatorio, 'w', encoding='utf-8') as f:
+            for item in RELATORIO_PROBLEMAS:
+                f.write(f"[{item['origem']}] {item['problemas']}\n")
+                f.write(f"  ORIGINAL: {item['original']}\n")
+                f.write(f"  TRADUZIDO: {item['traduzido']}\n\n")
+        print(f"📄 Relatório salvo em: {caminho_relatorio}")
+    else:
+        print("✅ Nenhum problema detectado pelos filtros.")
     print("=" * 70)
 
 # --- MODO DE TRADUÇÃO: WORD (.docx) ---
@@ -433,6 +608,9 @@ def modo_docx(caminho_arquivo):
 
             if texto_para_traduzir.strip():
                 traducao_final = processar_paragrafo_completo(texto_para_traduzir)
+                if USAR_FILTRO_GENERO:
+                    traducao_final = aplicar_filtro_genero(traducao_final, "neutro")
+                registrar_problemas(texto_para_traduzir, traducao_final, f"{os.path.basename(caminho_arquivo)}:{i + 1}")
                 documento_traduzido.add_paragraph(traducao_final)
             else:
                 documento_traduzido.add_paragraph('')
@@ -446,6 +624,14 @@ def modo_docx(caminho_arquivo):
         print("\n" + "=" * 70)
         print("--- Processo DOCX Concluído ---")
         print(f"✅ Tradução salva em: {caminho_saida}")
+        if RELATORIO_PROBLEMAS:
+            caminho_relatorio = os.path.join(os.path.dirname(caminho_arquivo), "relatorio_traducao.txt")
+            with open(caminho_relatorio, 'w', encoding='utf-8') as f:
+                for item in RELATORIO_PROBLEMAS:
+                    f.write(f"[{item['origem']}] {item['problemas']}\n")
+                    f.write(f"  ORIGINAL: {item['original']}\n")
+                    f.write(f"  TRADUZIDO: {item['traduzido']}\n\n")
+            print(f"📄 Relatório salvo em: {caminho_relatorio}")
         print("=" * 70)
 
     except Exception as e:
@@ -453,6 +639,110 @@ def modo_docx(caminho_arquivo):
         sys.exit(1)
 
 # --- INICIALIZAÇÃO DO SCRIPT ---
+
+def iniciar_interface_grafica():
+    janela = tk.Tk()
+    janela.title("Super Tradutor Automático")
+    janela.geometry("620x420")
+    janela.configure(bg="#1f1f1f")
+
+    estilo = ttk.Style()
+    estilo.theme_use("clam")
+    estilo.configure("TButton", font=("Segoe UI", 10), padding=6)
+    estilo.configure("TLabel", font=("Segoe UI", 10), background="#1f1f1f", foreground="#f0f0f0")
+    estilo.configure("TEntry", font=("Segoe UI", 10))
+
+    caminho_var = tk.StringVar()
+    modo_var = tk.StringVar(value="rpy")
+    glossario_var = tk.StringVar()
+    genero_var = tk.StringVar()
+    padroes_var = tk.StringVar()
+    filtro_var = tk.BooleanVar(value=True)
+
+    def escolher_caminho():
+        if modo_var.get() == "rpy":
+            caminho = filedialog.askdirectory(title="Selecione a pasta do jogo")
+        else:
+            caminho = filedialog.askopenfilename(title="Selecione o arquivo .docx", filetypes=[("Word", "*.docx")])
+        if caminho:
+            caminho_var.set(caminho)
+
+    def escolher_glossario():
+        caminho = filedialog.askopenfilename(title="Selecione o glossário", filetypes=[("Texto", "*.txt")])
+        if caminho:
+            glossario_var.set(caminho)
+
+    def escolher_genero():
+        caminho = filedialog.askopenfilename(title="Selecione o mapa de gênero", filetypes=[("Texto", "*.txt")])
+        if caminho:
+            genero_var.set(caminho)
+
+    def escolher_padroes():
+        caminho = filedialog.askopenfilename(title="Selecione os padrões regex", filetypes=[("Texto", "*.txt")])
+        if caminho:
+            padroes_var.set(caminho)
+
+    def executar():
+        caminho = caminho_var.get().strip()
+        if not caminho:
+            messagebox.showerror("Erro", "Selecione um caminho válido.")
+            return
+        configurar_opcoes(
+            glossario_var.get().strip(),
+            genero_var.get().strip(),
+            padroes_var.get().strip(),
+            filtro_var.get()
+        )
+        try:
+            if modo_var.get() == "rpy":
+                modo_rpy(caminho)
+            else:
+                modo_docx(caminho)
+            messagebox.showinfo("Concluído", "Processo finalizado. Veja o terminal para detalhes.")
+        except SystemExit:
+            pass
+        except Exception as e:
+            messagebox.showerror("Erro", f"Ocorreu um erro: {e}")
+
+    frame = ttk.Frame(janela)
+    frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+    ttk.Label(frame, text="Modo:").grid(row=0, column=0, sticky="w", pady=4)
+    ttk.Radiobutton(frame, text="Ren'Py (.rpy)", variable=modo_var, value="rpy").grid(row=0, column=1, sticky="w")
+    ttk.Radiobutton(frame, text="Word (.docx)", variable=modo_var, value="docx").grid(row=0, column=2, sticky="w")
+
+    ttk.Label(frame, text="Caminho:").grid(row=1, column=0, sticky="w", pady=4)
+    ttk.Entry(frame, textvariable=caminho_var, width=45).grid(row=1, column=1, columnspan=2, sticky="we")
+    ttk.Button(frame, text="Selecionar", command=escolher_caminho).grid(row=1, column=3, padx=6)
+
+    ttk.Label(frame, text="Glossário (opcional):").grid(row=2, column=0, sticky="w", pady=4)
+    ttk.Entry(frame, textvariable=glossario_var, width=45).grid(row=2, column=1, columnspan=2, sticky="we")
+    ttk.Button(frame, text="Selecionar", command=escolher_glossario).grid(row=2, column=3, padx=6)
+
+    ttk.Label(frame, text="Mapa de gênero (opcional):").grid(row=3, column=0, sticky="w", pady=4)
+    ttk.Entry(frame, textvariable=genero_var, width=45).grid(row=3, column=1, columnspan=2, sticky="we")
+    ttk.Button(frame, text="Selecionar", command=escolher_genero).grid(row=3, column=3, padx=6)
+
+    ttk.Label(frame, text="Padrões regex (opcional):").grid(row=4, column=0, sticky="w", pady=4)
+    ttk.Entry(frame, textvariable=padroes_var, width=45).grid(row=4, column=1, columnspan=2, sticky="we")
+    ttk.Button(frame, text="Selecionar", command=escolher_padroes).grid(row=4, column=3, padx=6)
+
+    ttk.Checkbutton(frame, text="Aplicar filtro anti-feminino", variable=filtro_var).grid(row=5, column=0, columnspan=3, sticky="w", pady=6)
+
+    ttk.Button(frame, text="Executar", command=executar).grid(row=6, column=0, columnspan=4, pady=20)
+
+    for i in range(4):
+        frame.columnconfigure(i, weight=1)
+
+    janela.mainloop()
+
+def configurar_opcoes(caminho_glossario, caminho_genero, caminho_padroes, usar_filtro):
+    global GLOSSARIO_PROTEGIDO, MAPA_GENERO_PERSONAGEM, USAR_FILTRO_GENERO, RELATORIO_PROBLEMAS, PADROES_PROTEGIDOS
+    GLOSSARIO_PROTEGIDO = carregar_glossario(caminho_glossario)
+    MAPA_GENERO_PERSONAGEM = carregar_mapa_genero(caminho_genero)
+    PADROES_PROTEGIDOS = PADROES_PROTEGIDOS_PADRAO + carregar_padroes_protegidos(caminho_padroes)
+    USAR_FILTRO_GENERO = usar_filtro
+    RELATORIO_PROBLEMAS = []
 
 def main():
     parser = argparse.ArgumentParser(
@@ -470,17 +760,52 @@ Exemplos de uso:
     parser.add_argument(
         'caminho',
         type=str,
+        nargs='?',
+        default=None,
         help="O caminho para o diretório (modo rpy) ou arquivo (modo docx)."
     )
     parser.add_argument(
         '--modo',
         type=str,
-        choices=['rpy', 'docx'],
+        choices=['rpy', 'docx', 'gui'],
         required=True,
         help="Define o modo de operação: 'rpy' para diretório Ren'Py ou 'docx' para um único arquivo Word."
     )
+    parser.add_argument(
+        '--glossario',
+        type=str,
+        default=None,
+        help="Caminho para um glossário de termos que não devem ser traduzidos."
+    )
+    parser.add_argument(
+        '--genero',
+        type=str,
+        default=None,
+        help="Caminho para um arquivo de mapa de gênero por personagem."
+    )
+    parser.add_argument(
+        '--padroes',
+        type=str,
+        default=None,
+        help="Caminho para um arquivo com padrões regex adicionais a serem protegidos."
+    )
+    parser.add_argument(
+        '--sem-filtro-genero',
+        action='store_true',
+        help="Desativa o filtro anti-feminino."
+    )
 
     args = parser.parse_args()
+
+    if args.modo == 'gui':
+        iniciar_interface_grafica()
+        return
+
+    if not args.caminho:
+        print("❌ ERRO: Caminho obrigatório para os modos rpy/docx.")
+        sys.exit(1)
+
+    configurar_opcoes(args.glossario, args.genero, args.padroes, not args.sem_filtro_genero)
 
     if args.modo == 'rpy':
         modo_rpy(args.caminho)
